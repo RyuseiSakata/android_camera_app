@@ -41,12 +41,26 @@ import android.widget.FrameLayout
 import android.view.ViewGroup
 import java.io.File
 import android.view.Gravity
+import android.graphics.*
+import android.graphics.drawable.BitmapDrawable
+import android.net.Uri
+import java.io.ByteArrayOutputStream
+import java.io.OutputStream
+import android.view.MotionEvent
 
 typealias LumaListener = (luma: Double) -> Unit
 
 class MainActivity : AppCompatActivity() {
     private lateinit var viewBinding: ActivityMainBinding
     private lateinit var stampImageView: ImageView
+    
+    // スタンプの位置を保持する変数
+    private var stampX: Float = 0f
+    private var stampY: Float = 0f
+    private var initialX: Float = 0f
+    private var initialY: Float = 0f
+    private var initialTouchX: Float = 0f
+    private var initialTouchY: Float = 0f
 
     private var imageCapture: ImageCapture? = null
 
@@ -159,18 +173,72 @@ class MainActivity : AppCompatActivity() {
         val displayMetrics = resources.displayMetrics
         val stampSize = (displayMetrics.widthPixels * 0.2).toInt()
         
-        stampImageView.layoutParams = FrameLayout.LayoutParams(
+        // スタンプを含むFrameLayoutを作成
+        val frameLayout = FrameLayout(this)
+        frameLayout.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        )
+        
+        // スタンプのレイアウトパラメータを設定
+        val stampParams = FrameLayout.LayoutParams(
             stampSize,
             stampSize
         ).apply {
-            // 右下に配置
-            gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
-            // マージンを設定
-            marginEnd = 32
-            bottomMargin = 32
+            gravity = Gravity.NO_GRAVITY  // 重力を解除して自由に移動できるように
         }
         
-        viewBinding.viewFinder.addView(stampImageView)
+        // スタンプをFrameLayoutに追加
+        stampImageView.layoutParams = stampParams
+        frameLayout.addView(stampImageView)
+        
+        // ドラッグ処理の設定
+        stampImageView.setOnTouchListener { view, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    // タッチ開始時の位置を記録
+                    initialX = view.x
+                    initialY = view.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    // 移動量を計算して反映
+                    val dx = event.rawX - initialTouchX
+                    val dy = event.rawY - initialTouchY
+                    view.x = initialX + dx
+                    view.y = initialY + dy
+                    
+                    // 現在位置を保存
+                    stampX = view.x
+                    stampY = view.y
+                    true
+                }
+                else -> false
+            }
+        }
+        
+        // カメラプレビューの親ViewGroupを取得
+        val parent = viewBinding.viewFinder.parent as ViewGroup
+        val index = parent.indexOfChild(viewBinding.viewFinder)
+        
+        // カメラプレビューを一時的に削除
+        parent.removeView(viewBinding.viewFinder)
+        
+        // FrameLayoutを追加
+        parent.addView(frameLayout, index)
+        
+        // カメラプレビューをFrameLayoutに追加
+        frameLayout.addView(viewBinding.viewFinder, 0)
+        
+        // 初期位置を右下に設定
+        stampImageView.post {
+            stampX = frameLayout.width - stampSize - 32f
+            stampY = frameLayout.height - stampSize - 32f
+            stampImageView.x = stampX
+            stampImageView.y = stampY
+        }
     }
 
     private fun takePhoto() {
@@ -205,9 +273,67 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    val msg = "写真を保存しました: ${output.savedUri}"
-                    Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, msg)
+                    try {
+                        // 撮影した写真を読み込む
+                        val uri = output.savedUri ?: return
+                        val inputStream = contentResolver.openInputStream(uri) ?: return
+                        val originalBitmap = BitmapFactory.decodeStream(inputStream)
+                        inputStream.close()
+
+                        // スタンプ画像を読み込む
+                        val stampDrawable = ContextCompat.getDrawable(baseContext, R.drawable.stamp) ?: return
+                        val stampBitmap = (stampDrawable as BitmapDrawable).bitmap
+
+                        // 合成用のBitmapを作成
+                        val resultBitmap = Bitmap.createBitmap(
+                            originalBitmap.width,
+                            originalBitmap.height,
+                            Bitmap.Config.ARGB_8888
+                        )
+
+                        // 写真とスタンプを合成
+                        val canvas = Canvas(resultBitmap)
+                        canvas.drawBitmap(originalBitmap, 0f, 0f, null)
+
+                        // スタンプのサイズを計算
+                        val stampSize = originalBitmap.width / 5  // 画像の1/5のサイズ
+                        val scaledStampBitmap = Bitmap.createScaledBitmap(
+                            stampBitmap,
+                            stampSize,
+                            stampSize,
+                            true
+                        )
+
+                        // プレビュー画面とのサイズ比率を計算
+                        val previewWidth = viewBinding.viewFinder.width.toFloat()
+                        val previewHeight = viewBinding.viewFinder.height.toFloat()
+                        val scaleX = originalBitmap.width.toFloat() / previewWidth
+                        val scaleY = originalBitmap.height.toFloat() / previewHeight
+
+                        // スタンプの位置を写真のサイズに合わせて調整
+                        val adjustedX = stampX * scaleX
+                        val adjustedY = stampY * scaleY
+
+                        // スタンプを描画
+                        canvas.drawBitmap(scaledStampBitmap, adjustedX, adjustedY, null)
+
+                        // 合成した画像を保存
+                        contentResolver.openOutputStream(uri)?.use { outputStream ->
+                            resultBitmap.compress(Bitmap.CompressFormat.JPEG, 100, outputStream)
+                        }
+
+                        // Bitmapをリサイクル
+                        originalBitmap.recycle()
+                        scaledStampBitmap.recycle()
+                        resultBitmap.recycle()
+
+                        val msg = "スタンプ付き写真を保存しました: ${uri}"
+                        Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
+                        Log.d(TAG, msg)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "スタンプの合成に失敗しました: ${e.message}", e)
+                        Toast.makeText(baseContext, "スタンプの合成に失敗しました", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         )

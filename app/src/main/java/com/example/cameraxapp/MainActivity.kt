@@ -36,11 +36,17 @@ import androidx.core.content.PermissionChecker
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Locale
+import android.widget.ImageView
+import android.widget.FrameLayout
+import android.view.ViewGroup
+import java.io.File
+import android.view.Gravity
 
 typealias LumaListener = (luma: Double) -> Unit
 
 class MainActivity : AppCompatActivity() {
     private lateinit var viewBinding: ActivityMainBinding
+    private lateinit var stampImageView: ImageView
 
     private var imageCapture: ImageCapture? = null
 
@@ -127,6 +133,9 @@ class MainActivity : AppCompatActivity() {
         viewBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(viewBinding.root)
 
+        // Add stamp image overlay
+        setupStampOverlay()
+
         // Request camera permissions
         if (allPermissionsGranted()) {
             startCamera()
@@ -142,11 +151,32 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
     }
 
+    private fun setupStampOverlay() {
+        stampImageView = ImageView(this)
+        stampImageView.setImageResource(R.drawable.stamp)
+        
+        // スタンプのサイズを画面の20%程度に設定
+        val displayMetrics = resources.displayMetrics
+        val stampSize = (displayMetrics.widthPixels * 0.2).toInt()
+        
+        stampImageView.layoutParams = FrameLayout.LayoutParams(
+            stampSize,
+            stampSize
+        ).apply {
+            // 右下に配置
+            gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
+            // マージンを設定
+            marginEnd = 32
+            bottomMargin = 32
+        }
+        
+        viewBinding.viewFinder.addView(stampImageView)
+    }
+
     private fun takePhoto() {
-        // Get a stable reference of the modifiable image capture use case
         val imageCapture = imageCapture ?: return
 
-        // Create time stamped name and MediaStore entry.
+        // Create time stamped name and MediaStore entry
         val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US)
             .format(System.currentTimeMillis())
         val contentValues = ContentValues().apply {
@@ -164,19 +194,18 @@ class MainActivity : AppCompatActivity() {
                 contentValues)
             .build()
 
-        // Set up image capture listener, which is triggered after photo has
-        // been taken
+        // Set up image capture listener
         imageCapture.takePicture(
             outputOptions,
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onError(exc: ImageCaptureException) {
                     Log.e(TAG, "Photo capture failed: ${exc.message}", exc)
+                    Toast.makeText(baseContext, "エラーが発生しました", Toast.LENGTH_SHORT).show()
                 }
 
-                override fun
-                        onImageSaved(output: ImageCapture.OutputFileResults){
-                    val msg = "Photo capture succeeded: ${output.savedUri}"
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    val msg = "写真を保存しました: ${output.savedUri}"
                     Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
                     Log.d(TAG, msg)
                 }

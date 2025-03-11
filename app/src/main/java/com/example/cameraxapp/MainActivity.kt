@@ -281,7 +281,7 @@ class MainActivity : AppCompatActivity() {
                         inputStream.close()
 
                         // スタンプ画像を読み込む
-                        val stampDrawable = ContextCompat.getDrawable(baseContext, R.drawable.stamp) ?: return
+                        val stampDrawable = ContextCompat.getDrawable(baseContext, R.drawable.stamp) ?: return//この部分でstamp.pngを検索している名前を保存名になるように変化すればいいかも？
                         val stampBitmap = (stampDrawable as BitmapDrawable).bitmap
 
                         // 合成用のBitmapを作成

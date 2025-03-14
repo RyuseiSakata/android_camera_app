@@ -48,124 +48,173 @@ import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import android.view.MotionEvent
 
+/**
+ * 輝度リスナーの型エイリアス定義
+ * 画像の輝度（明るさ）の値を受け取るコールバック関数の型
+ */
 typealias LumaListener = (luma: Double) -> Unit
 
+/**
+ * メインアクティビティクラス
+ * カメラプレビュー、写真撮影、ビデオ録画、スタンプ機能を提供する
+ */
 class MainActivity : AppCompatActivity() {
+    // ビューバインディング - レイアウトの各要素にアクセスするために使用
     private lateinit var viewBinding: ActivityMainBinding
+    // スタンプ画像を表示するためのImageView
     private lateinit var stampImageView: ImageView
     
     // スタンプの位置を保持する変数
-    private var stampX: Float = 0f
-    private var stampY: Float = 0f
-    private var initialX: Float = 0f
-    private var initialY: Float = 0f
-    private var initialTouchX: Float = 0f
-    private var initialTouchY: Float = 0f
+    private var stampX: Float = 0f // スタンプのX座標
+    private var stampY: Float = 0f // スタンプのY座標
+    private var initialX: Float = 0f // ドラッグ開始時のスタンプX座標
+    private var initialY: Float = 0f // ドラッグ開始時のスタンプY座標
+    private var initialTouchX: Float = 0f // ドラッグ開始時のタッチX座標
+    private var initialTouchY: Float = 0f // ドラッグ開始時のタッチY座標
 
+    // 写真撮影用のCameraXコンポーネント
     private var imageCapture: ImageCapture? = null
 
+    // ビデオ録画用のCameraXコンポーネント
     private var videoCapture: VideoCapture<Recorder>? = null
     private var recording: Recording? = null
 
+    // カメラ操作を実行するためのExecutor
     private lateinit var cameraExecutor: ExecutorService
 
+    /**
+     * 画像の輝度を分析するための内部クラス
+     * CameraXのImageAnalysis.Analyzerインターフェースを実装
+     */
     private class LuminosityAnalyzer(private val listener: LumaListener) : ImageAnalysis.Analyzer {
 
+        /**
+         * ByteBufferをByteArrayに変換する拡張関数
+         */
         private fun ByteBuffer.toByteArray(): ByteArray {
-            rewind()    // Rewind the buffer to zero
+            rewind()    // バッファをゼロにリワインド
             val data = ByteArray(remaining())
-            get(data)   // Copy the buffer into a byte array
-            return data // Return the byte array
+            get(data)   // バッファをバイト配列にコピー
+            return data // バイト配列を返す
         }
 
+        /**
+         * 画像を分析するメソッド
+         * 画像の輝度（明るさ）を計算し、リスナーに通知する
+         */
         override fun analyze(image: ImageProxy) {
-
+            // 画像の最初のプレーンからバッファを取得
             val buffer = image.planes[0].buffer
             val data = buffer.toByteArray()
+            // 各ピクセルの値を取得し、平均輝度を計算
             val pixels = data.map { it.toInt() and 0xFF }
             val luma = pixels.average()
 
+            // 計算した輝度をリスナーに通知
             listener(luma)
 
+            // 画像リソースを解放
             image.close()
         }
     }
 
+    /**
+     * カメラを初期化し、プレビューを開始するメソッド
+     */
     private fun startCamera() {
+        // カメラプロバイダのインスタンスを取得
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
+        // リスナーを追加して、カメラプロバイダが利用可能になったら実行
         cameraProviderFuture.addListener({
-            // Used to bind the lifecycle of cameras to the lifecycle owner
+            // カメラのライフサイクルをライフサイクルオーナーにバインドするために使用
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
-            // Preview
+            // プレビューの設定
             val preview = Preview.Builder()
                 .build()
                 .also {
                     it.setSurfaceProvider(viewBinding.viewFinder.surfaceProvider)
                 }
+            
+            // レコーダーの設定（ビデオ録画用）
             val recorder = Recorder.Builder()
                 .setQualitySelector(QualitySelector.from(Quality.HIGHEST,
                     FallbackStrategy.higherQualityOrLowerThan(Quality.SD)))
                 .build()
             videoCapture = VideoCapture.withOutput(recorder)
 
+            // 写真撮影用の設定
             imageCapture = ImageCapture.Builder().build()
 
             /*
+            // 画像分析の設定（現在は使用していない）
             val imageAnalyzer = ImageAnalysis.Builder().build()
                 .also {
                     setAnalyzer(
                         cameraExecutor,
                         LuminosityAnalyzer { luma ->
-                            Log.d(TAG, "Average luminosity: $luma")
+                            Log.d(TAG, "平均輝度: $luma")
                         }
                     )
                 }
             */
 
-            // Select back camera as a default
+            // デフォルトで背面カメラを選択
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
             try {
-                // Unbind use cases before rebinding
+                // 再バインド前にユースケースをアンバインド
                 cameraProvider.unbindAll()
 
-                // Bind use cases to camera
+                // ユースケースをカメラにバインド
                 cameraProvider.bindToLifecycle(
                     this, cameraSelector, preview, imageCapture, videoCapture)
 
             } catch(exc: Exception) {
-                Log.e(TAG, "Use case binding failed", exc)
+                // エラーログを出力
+                Log.e(TAG, "ユースケースのバインドに失敗しました", exc)
             }
 
         }, ContextCompat.getMainExecutor(this))
     }
 
+    /**
+     * アクティビティの作成時に呼ばれるメソッド
+     * UIの初期化、カメラの設定、ボタンリスナーの設定を行う
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // ビューバインディングの初期化
         viewBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(viewBinding.root)
 
-        // Add stamp image overlay
+        // スタンプ画像オーバーレイを追加
         setupStampOverlay()
 
-        // Request camera permissions
+        // カメラ権限のリクエスト
         if (allPermissionsGranted()) {
-            startCamera()
+            startCamera() // 権限がある場合はカメラを開始
         } else {
+            // 権限がない場合はリクエスト
             ActivityCompat.requestPermissions(
                 this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
         }
 
-        // Set up the listeners for take photo and video capture buttons
+        // 写真撮影とビデオ録画ボタンのリスナーを設定
         viewBinding.imageCaptureButton.setOnClickListener { takePhoto() }
         viewBinding.videoCaptureButton.setOnClickListener { captureVideo() }
 
+        // カメラ操作用のExecutorを初期化
         cameraExecutor = Executors.newSingleThreadExecutor()
     }
 
+    /**
+     * スタンプオーバーレイを設定するメソッド
+     * ドラッグ可能なスタンプをカメラプレビュー上に配置する
+     */
     private fun setupStampOverlay() {
+        // スタンプ用のImageViewを作成
         stampImageView = ImageView(this)
         stampImageView.setImageResource(R.drawable.stamp)
         
@@ -241,10 +290,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 写真を撮影するメソッド
+     * スタンプを合成した写真を保存する
+     */
     private fun takePhoto() {
+        // ImageCaptureが初期化されていない場合は早期リターン
         val imageCapture = imageCapture ?: return
 
-        // Create time stamped name and MediaStore entry
+        // タイムスタンプ付きの名前とMediaStoreエントリを作成
         val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US)
             .format(System.currentTimeMillis())
         val contentValues = ContentValues().apply {
@@ -255,23 +309,25 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Create output options object which contains file + metadata
+        // ファイルとメタデータを含む出力オプションを作成
         val outputOptions = ImageCapture.OutputFileOptions
             .Builder(contentResolver,
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                 contentValues)
             .build()
 
-        // Set up image capture listener
+        // 画像キャプチャリスナーを設定
         imageCapture.takePicture(
             outputOptions,
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
+                // 写真撮影に失敗した場合
                 override fun onError(exc: ImageCaptureException) {
-                    Log.e(TAG, "Photo capture failed: ${exc.message}", exc)
+                    Log.e(TAG, "写真の撮影に失敗しました: ${exc.message}", exc)
                     Toast.makeText(baseContext, "エラーが発生しました", Toast.LENGTH_SHORT).show()
                 }
 
+                // 写真が保存された場合
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     try {
                         // 撮影した写真を読み込む
@@ -281,7 +337,7 @@ class MainActivity : AppCompatActivity() {
                         inputStream.close()
 
                         // スタンプ画像を読み込む
-                        val stampDrawable = ContextCompat.getDrawable(baseContext, R.drawable.stamp) ?: return//この部分でstamp.pngを検索している名前を保存名になるように変化すればいいかも？
+                        val stampDrawable = ContextCompat.getDrawable(baseContext, R.drawable.stamp) ?: return
                         val stampBitmap = (stampDrawable as BitmapDrawable).bitmap
 
                         // 合成用のBitmapを作成
@@ -295,8 +351,8 @@ class MainActivity : AppCompatActivity() {
                         val canvas = Canvas(resultBitmap)
                         canvas.drawBitmap(originalBitmap, 0f, 0f, null)
 
-                        // スタンプのサイズを計算
-                        val stampSize = originalBitmap.width / 5  // 画像の1/5のサイズ
+                        // スタンプのサイズを計算（写真の1/5のサイズ）
+                        val stampSize = originalBitmap.width / 5
                         val scaledStampBitmap = Bitmap.createScaledBitmap(
                             stampBitmap,
                             stampSize,
@@ -322,15 +378,17 @@ class MainActivity : AppCompatActivity() {
                             resultBitmap.compress(Bitmap.CompressFormat.JPEG, 100, outputStream)
                         }
 
-                        // Bitmapをリサイクル
+                        // Bitmapをリサイクル（メモリリーク防止）
                         originalBitmap.recycle()
                         scaledStampBitmap.recycle()
                         resultBitmap.recycle()
 
+                        // 成功メッセージを表示
                         val msg = "スタンプ付き写真を保存しました: ${uri}"
                         Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
                         Log.d(TAG, msg)
                     } catch (e: Exception) {
+                        // エラー処理
                         Log.e(TAG, "スタンプの合成に失敗しました: ${e.message}", e)
                         Toast.makeText(baseContext, "スタンプの合成に失敗しました", Toast.LENGTH_SHORT).show()
                     }
@@ -339,21 +397,27 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    // Implements VideoCapture use case, including start and stop capturing.
+    /**
+     * ビデオを録画するメソッド
+     * 録画の開始と停止を処理する
+     */
     private fun captureVideo() {
+        // VideoCaptureが初期化されていない場合は早期リターン
         val videoCapture = this.videoCapture ?: return
 
+        // 録画中はボタンを無効化
         viewBinding.videoCaptureButton.isEnabled = false
 
+        // 現在の録画セッションを取得
         val curRecording = recording
         if (curRecording != null) {
-            // Stop the current recording session.
+            // 録画中の場合は停止
             curRecording.stop()
             recording = null
             return
         }
 
-        // create and start a new recording session
+        // 新しい録画セッションを作成して開始
         val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US)
             .format(System.currentTimeMillis())
         val contentValues = ContentValues().apply {
@@ -364,13 +428,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // MediaStoreの出力オプションを設定
         val mediaStoreOutputOptions = MediaStoreOutputOptions
             .Builder(contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
             .setContentValues(contentValues)
             .build()
+        
+        // 録画を開始
         recording = videoCapture.output
             .prepareRecording(this, mediaStoreOutputOptions)
             .apply {
+                // 音声録音の権限がある場合は音声を有効化
                 if (PermissionChecker.checkSelfPermission(this@MainActivity,
                         Manifest.permission.RECORD_AUDIO) ==
                     PermissionChecker.PERMISSION_GRANTED)
@@ -379,26 +447,32 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             .start(ContextCompat.getMainExecutor(this)) { recordEvent ->
+                // 録画イベントに応じた処理
                 when(recordEvent) {
+                    // 録画開始時
                     is VideoRecordEvent.Start -> {
                         viewBinding.videoCaptureButton.apply {
                             text = getString(R.string.stop_capture)
                             isEnabled = true
                         }
                     }
+                    // 録画終了時
                     is VideoRecordEvent.Finalize -> {
                         if (!recordEvent.hasError()) {
-                            val msg = "Video capture succeeded: " +
+                            // 成功メッセージを表示
+                            val msg = "ビデオの録画に成功しました: " +
                                     "${recordEvent.outputResults.outputUri}"
                             Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT)
                                 .show()
                             Log.d(TAG, msg)
                         } else {
+                            // エラー処理
                             recording?.close()
                             recording = null
-                            Log.e(TAG, "Video capture ends with error: " +
+                            Log.e(TAG, "ビデオの録画がエラーで終了しました: " +
                                     "${recordEvent.error}")
                         }
+                        // ボタンテキストを「録画開始」に戻す
                         viewBinding.videoCaptureButton.apply {
                             text = getString(R.string.start_capture)
                             isEnabled = true
@@ -408,41 +482,62 @@ class MainActivity : AppCompatActivity() {
             }
     }
 
+    /**
+     * 必要な権限がすべて許可されているかチェックするメソッド
+     */
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
         ContextCompat.checkSelfPermission(
             baseContext, it) == PackageManager.PERMISSION_GRANTED
     }
 
+    /**
+     * アクティビティが破棄されるときに呼ばれるメソッド
+     * リソースの解放を行う
+     */
     override fun onDestroy() {
         super.onDestroy()
+        // カメラExecutorをシャットダウン
         cameraExecutor.shutdown()
     }
 
+    /**
+     * 権限リクエストの結果を処理するメソッド
+     */
     override fun onRequestPermissionsResult(
         requestCode: Int, permissions: Array<String>, grantResults:
         IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
+                // 権限が許可された場合はカメラを開始
                 startCamera()
             } else {
+                // 権限が拒否された場合はメッセージを表示してアプリを終了
                 Toast.makeText(this,
-                    "Permissions not granted by the user.",
+                    "ユーザーによって権限が許可されませんでした。",
                     Toast.LENGTH_SHORT).show()
                 finish()
             }
         }
     }
 
+    /**
+     * 定数とアプリ全体で使用される値を定義するコンパニオンオブジェクト
+     */
     companion object {
+        // ログ用のタグ
         private const val TAG = "CameraXApp"
+        // ファイル名のフォーマット
         private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
+        // 権限リクエストコード
         private const val REQUEST_CODE_PERMISSIONS = 10
+        // 必要な権限のリスト
         private val REQUIRED_PERMISSIONS =
             mutableListOf (
                 Manifest.permission.CAMERA,
                 Manifest.permission.RECORD_AUDIO
             ).apply {
+                // Android P以前の場合は外部ストレージの書き込み権限も必要
                 if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
                     add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 }

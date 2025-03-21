@@ -47,6 +47,15 @@ import android.net.Uri
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import android.view.MotionEvent
+import android.media.ExifInterface
+import java.io.FileOutputStream
+import android.app.AlertDialog
+import android.content.Intent
+import android.content.Context
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import java.util.TimeZone
 
 /**
  * 輝度リスナーの型エイリアス定義
@@ -81,6 +90,30 @@ class MainActivity : AppCompatActivity() {
 
     // カメラ操作を実行するためのExecutor
     private lateinit var cameraExecutor: ExecutorService
+
+    // 位置情報関連
+    private lateinit var locationManager: LocationManager
+    private var currentLocation: Location? = null
+    
+    // 位置情報のリスナー
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            // 位置情報が更新されたら保存
+            currentLocation = location
+            Log.d(TAG, "位置情報が更新されました: ${location.latitude}, ${location.longitude}")
+        }
+        
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String, status: Int, extras: Bundle) {}
+        
+        override fun onProviderEnabled(provider: String) {}
+        
+        override fun onProviderDisabled(provider: String) {
+            // 位置情報が無効になったら通知
+            Toast.makeText(baseContext, "位置情報が無効です。設定から位置情報を有効にしてください。", 
+                Toast.LENGTH_SHORT).show()
+        }
+    }
 
     /**
      * 画像の輝度を分析するための内部クラス
@@ -147,18 +180,6 @@ class MainActivity : AppCompatActivity() {
             // 写真撮影用の設定
             imageCapture = ImageCapture.Builder().build()
 
-            /*
-            // 画像分析の設定（現在は使用していない）
-            val imageAnalyzer = ImageAnalysis.Builder().build()
-                .also {
-                    setAnalyzer(
-                        cameraExecutor,
-                        LuminosityAnalyzer { luma ->
-                            Log.d(TAG, "平均輝度: $luma")
-                        }
-                    )
-                }
-            */
 
             // デフォルトで背面カメラを選択
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
@@ -207,6 +228,9 @@ class MainActivity : AppCompatActivity() {
 
         // カメラ操作用のExecutorを初期化
         cameraExecutor = Executors.newSingleThreadExecutor()
+
+        // 位置情報マネージャーの初期化
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
     }
 
     /**
@@ -336,7 +360,7 @@ class MainActivity : AppCompatActivity() {
                         val originalBitmap = BitmapFactory.decodeStream(inputStream)
                         inputStream.close()
 
-                        // スタンプ画像を読み込む
+                        // スタンプ画像を読み込む現在はstamp.pngのファイルのみを検索
                         val stampDrawable = ContextCompat.getDrawable(baseContext, R.drawable.stamp) ?: return
                         val stampBitmap = (stampDrawable as BitmapDrawable).bitmap
 
@@ -373,28 +397,149 @@ class MainActivity : AppCompatActivity() {
                         // スタンプを描画
                         canvas.drawBitmap(scaledStampBitmap, adjustedX, adjustedY, null)
 
+                        // EXIF情報を設定
+                        val exifInterface = ExifInterface(getFilePathFromUri(uri) ?: return)
+                        
+                        // 基本的なEXIF情報を設定
+                        exifInterface.setAttribute(ExifInterface.TAG_DATETIME, SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(System.currentTimeMillis()))
+                        exifInterface.setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER)
+                        exifInterface.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)
+                        
+                        // カスタムEXIF情報（スタンプの位置情報）を設定
+                        exifInterface.setAttribute(ExifInterface.TAG_USER_COMMENT, "StampPosition: X=${adjustedX}, Y=${adjustedY}")
+                        
+                        // アプリケーション名を設定
+                        exifInterface.setAttribute(ExifInterface.TAG_SOFTWARE, "CameraX Stamp App")
+                        
+                        // 位置情報をEXIFに設定
+                        currentLocation?.let { location ->
+                            // 緯度を設定
+                            val latitudeRef = if (location.latitude >= 0) "N" else "S"
+                            val latitudeValue = convertToExifLatLong(Math.abs(location.latitude))
+                            exifInterface.setAttribute(ExifInterface.TAG_GPS_LATITUDE_REF, latitudeRef)
+                            exifInterface.setAttribute(ExifInterface.TAG_GPS_LATITUDE, latitudeValue)
+                            
+                            // 経度を設定
+                            val longitudeRef = if (location.longitude >= 0) "E" else "W"
+                            val longitudeValue = convertToExifLatLong(Math.abs(location.longitude))
+                            exifInterface.setAttribute(ExifInterface.TAG_GPS_LONGITUDE_REF, longitudeRef)
+                            exifInterface.setAttribute(ExifInterface.TAG_GPS_LONGITUDE, longitudeValue)
+                            
+                            // 高度を設定（メートル単位）
+                            if (location.hasAltitude()) {
+                                val altitude = location.altitude
+                                val altitudeRef = if (altitude >= 0) "0" else "1" // 0=海抜、1=海抜以下
+                                exifInterface.setAttribute(ExifInterface.TAG_GPS_ALTITUDE_REF, altitudeRef)
+                                exifInterface.setAttribute(ExifInterface.TAG_GPS_ALTITUDE, "${Math.abs(altitude)}")
+                            }
+                            
+                            // 撮影時間を設定（UTC時間）
+                            val utcTime = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).apply { 
+                                timeZone = TimeZone.getTimeZone("UTC") 
+                            }.format(location.time)
+                            exifInterface.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, utcTime.substring(0, 10).replace(":", "/"))
+                            exifInterface.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, utcTime.substring(11))
+                            
+                            Log.d(TAG, "位置情報をEXIFに設定しました: ${location.latitude}, ${location.longitude}")
+                        }
+                        
+                        // EXIF情報を保存
+                        exifInterface.saveAttributes()
+                        
                         // 合成した画像を保存
                         contentResolver.openOutputStream(uri)?.use { outputStream ->
                             resultBitmap.compress(Bitmap.CompressFormat.JPEG, 100, outputStream)
                         }
+                        
+                        // 画像保存後にEXIF情報を再設定（画像の保存によってEXIF情報が消えることがあるため）
+                        val updatedExif = ExifInterface(getFilePathFromUri(uri) ?: return)
+                        updatedExif.setAttribute(ExifInterface.TAG_DATETIME, SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(System.currentTimeMillis()))
+                        updatedExif.setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER)
+                        updatedExif.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)
+                        updatedExif.setAttribute(ExifInterface.TAG_USER_COMMENT, "StampPosition: X=${adjustedX}, Y=${adjustedY}")
+                        updatedExif.setAttribute(ExifInterface.TAG_SOFTWARE, "CameraX Stamp App")
+                        
+                        // 位置情報を再設定
+                        currentLocation?.let { location ->
+                            val latitudeRef = if (location.latitude >= 0) "N" else "S"
+                            val latitudeValue = convertToExifLatLong(Math.abs(location.latitude))
+                            updatedExif.setAttribute(ExifInterface.TAG_GPS_LATITUDE_REF, latitudeRef)
+                            updatedExif.setAttribute(ExifInterface.TAG_GPS_LATITUDE, latitudeValue)
+                            
+                            val longitudeRef = if (location.longitude >= 0) "E" else "W"
+                            val longitudeValue = convertToExifLatLong(Math.abs(location.longitude))
+                            updatedExif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE_REF, longitudeRef)
+                            updatedExif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE, longitudeValue)
+                            
+                            if (location.hasAltitude()) {
+                                val altitude = location.altitude
+                                val altitudeRef = if (altitude >= 0) "0" else "1"
+                                updatedExif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE_REF, altitudeRef)
+                                updatedExif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE, "${Math.abs(altitude)}")
+                            }
+                            
+                            val utcTime = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).apply { 
+                                timeZone = TimeZone.getTimeZone("UTC") 
+                            }.format(location.time)
+                            updatedExif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, utcTime.substring(0, 10).replace(":", "/"))
+                            updatedExif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, utcTime.substring(11))
+                        }
+                        
+                        updatedExif.saveAttributes()
 
                         // Bitmapをリサイクル（メモリリーク防止）
                         originalBitmap.recycle()
                         scaledStampBitmap.recycle()
                         resultBitmap.recycle()
 
-                        // 成功メッセージを表示
-                        val msg = "スタンプ付き写真を保存しました: ${uri}"
+                        // 成功メッセージを表示（位置情報の有無を含める）
+                        val locationInfo = if (currentLocation != null) "（位置情報あり）" else "（位置情報なし）"
+                        val msg = "EXIF情報付きスタンプ写真を保存しました${locationInfo}: ${uri}"
                         Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
                         Log.d(TAG, msg)
+
+                        // 写真保存後に位置情報を表示
+                        showLocationInfo()
                     } catch (e: Exception) {
                         // エラー処理
-                        Log.e(TAG, "スタンプの合成に失敗しました: ${e.message}", e)
-                        Toast.makeText(baseContext, "スタンプの合成に失敗しました", Toast.LENGTH_SHORT).show()
+                        Log.e(TAG, "スタンプの合成またはEXIF情報の設定に失敗しました: ${e.message}", e)
+                        Toast.makeText(baseContext, "スタンプの合成またはEXIF情報の設定に失敗しました", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
         )
+    }
+
+    /**
+     * Uriからファイルパスを取得するメソッド
+     * EXIF情報を設定するために必要
+     */
+    private fun getFilePathFromUri(uri: Uri): String? {
+        try {
+            // ContentResolverを使用してファイルパスを取得
+            val cursor = contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val columnIndex = it.getColumnIndex(MediaStore.Images.Media.DATA)
+                    if (columnIndex >= 0) {
+                        return it.getString(columnIndex)
+                    }
+                }
+            }
+            
+            // 通常の方法で取得できない場合は、一時ファイルを作成
+            val inputStream = contentResolver.openInputStream(uri) ?: return null
+            val tempFile = File(cacheDir, "temp_image.jpg")
+            inputStream.use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            return tempFile.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "ファイルパスの取得に失敗しました: ${e.message}", e)
+            return null
+        }
     }
 
     /**
@@ -518,7 +663,149 @@ class MainActivity : AppCompatActivity() {
                     Toast.LENGTH_SHORT).show()
                 finish()
             }
+        } else if (requestCode == LOCATION_PERMISSION_REQUEST) {
+            if (grantResults.isNotEmpty() && 
+                grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                // 位置情報の権限が許可された場合は位置情報の取得を開始
+                startLocationUpdates()
+            } else {
+                // 位置情報の権限が拒否された場合はメッセージを表示
+                Toast.makeText(this,
+                    "位置情報の権限が許可されていないため、位置情報は記録されません。",
+                    Toast.LENGTH_SHORT).show()
+            }
         }
+    }
+
+    /**
+     * 写真保存後に位置情報を表示する機能を追加
+     */
+    private fun showLocationInfo() {
+        　currentLocation?.let { location ->
+            val latitude = location.latitude
+            val longitude = location.longitude
+            
+            // 緯度・経度を表示
+            val locationInfo = "位置情報: 緯度 ${latitude}, 経度 ${longitude}"
+            
+            // アラートダイアログで表示
+            AlertDialog.Builder(this)
+                .setTitle("撮影位置情報")
+                .setMessage(locationInfo)
+                .setPositiveButton("地図で見る") { _, _ ->
+                    // 地図アプリで位置を表示
+                    val uri = Uri.parse("geo:${latitude},${longitude}?q=${latitude},${longitude}")
+                    val mapIntent = Intent(Intent.ACTION_VIEW, uri)
+                    if (mapIntent.resolveActivity(packageManager) != null) {
+                        startActivity(mapIntent)
+                    } else {
+                        Toast.makeText(this, "地図アプリが見つかりません", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .setNegativeButton("閉じる", null)
+                .show()
+        } ?: Toast.makeText(this, "位置情報がありません", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * アクティビティが表示される時に呼ばれるメソッド
+     * 位置情報の取得を開始する
+     */
+    override fun onResume() {
+        super.onResume()
+        // 位置情報の取得を開始
+        startLocationUpdates()
+    }
+    
+    /**
+     * アクティビティが非表示になる時に呼ばれるメソッド
+     * 位置情報の取得を停止する
+     */
+    override fun onPause() {
+        super.onPause()
+        // 位置情報の取得を停止
+        stopLocationUpdates()
+    }
+    
+    /**
+     * 位置情報の更新を開始するメソッド
+     */
+    private fun startLocationUpdates() {
+        try {
+            // 位置情報の権限が許可されているか確認
+            if (ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.ACCESS_FINE_LOCATION) == 
+                PackageManager.PERMISSION_GRANTED) {
+                
+                // GPSプロバイダから位置情報を取得（精度高）
+                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    locationManager.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER, 
+                        10000,  // 10秒ごとに更新
+                        10f,    // 10メートル以上移動したら更新
+                        locationListener
+                    )
+                    
+                    // 最後に取得した位置情報を取得
+                    val lastKnownLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                    if (lastKnownLocation != null) {
+                        currentLocation = lastKnownLocation
+                        Log.d(TAG, "最後に取得した位置情報: ${lastKnownLocation.latitude}, ${lastKnownLocation.longitude}")
+                    }
+                }
+                
+                // ネットワークプロバイダからも取得（バックアップ）
+                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    locationManager.requestLocationUpdates(
+                        LocationManager.NETWORK_PROVIDER, 
+                        10000,  // 10秒ごとに更新
+                        10f,    // 10メートル以上移動したら更新
+                        locationListener
+                    )
+                    
+                    // GPSで取得できなかった場合はネットワークから取得
+                    if (currentLocation == null) {
+                        val networkLocation = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                        if (networkLocation != null) {
+                            currentLocation = networkLocation
+                            Log.d(TAG, "ネットワークから取得した位置情報: ${networkLocation.latitude}, ${networkLocation.longitude}")
+                        }
+                    }
+                }
+            } else {
+                // 位置情報の権限がない場合は要求
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                    LOCATION_PERMISSION_REQUEST
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "位置情報の取得に失敗しました: ${e.message}", e)
+        }
+    }
+    
+    /**
+     * 位置情報の更新を停止するメソッド
+     */
+    private fun stopLocationUpdates() {
+        try {
+            locationManager.removeUpdates(locationListener)
+        } catch (e: Exception) {
+            Log.e(TAG, "位置情報の更新停止に失敗しました: ${e.message}", e)
+        }
+    }
+
+    /**
+     * 緯度・経度をEXIF形式の文字列に変換するメソッド
+     * EXIF形式: 度,分,秒 (例: "35/1,40/1,30/1")
+     */
+    private fun convertToExifLatLong(value: Double): String {
+        val degrees = value.toInt()
+        val minutes = ((value - degrees) * 60.0).toInt()
+        val seconds = ((value - degrees) * 60.0 - minutes) * 60.0
+        
+        return "$degrees/1,$minutes/1,${seconds.toInt()}/1"
     }
 
     /**
@@ -531,13 +818,15 @@ class MainActivity : AppCompatActivity() {
         private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
         // 権限リクエストコード
         private const val REQUEST_CODE_PERMISSIONS = 10
-        // 必要な権限のリスト
+        // 位置情報の権限リクエストコード
+        private const val LOCATION_PERMISSION_REQUEST = 20
+        // 必要な権限のリスト - 位置情報の権限を追加
         private val REQUIRED_PERMISSIONS =
             mutableListOf (
                 Manifest.permission.CAMERA,
-                Manifest.permission.RECORD_AUDIO
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.ACCESS_FINE_LOCATION  // 詳細な位置情報の権限
             ).apply {
-                // Android P以前の場合は外部ストレージの書き込み権限も必要
                 if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
                     add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 }

@@ -16,7 +16,6 @@ import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.example.cameraxapp.databinding.ActivityMainBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import android.widget.Toast
@@ -56,6 +55,8 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import java.util.TimeZone
+import android.widget.Button
+import androidx.camera.view.PreviewView
 
 /**
  * 輝度リスナーの型エイリアス定義
@@ -68,9 +69,10 @@ typealias LumaListener = (luma: Double) -> Unit
  * カメラプレビュー、写真撮影、ビデオ録画、スタンプ機能を提供する
  */
 class MainActivity : AppCompatActivity() {
-    // ビューバインディング - レイアウトの各要素にアクセスするために使用
-    private lateinit var viewBinding: ActivityMainBinding
-    // スタンプ画像を表示するためのImageView
+    // ViewBindingの代わりに直接Viewを保持
+    private lateinit var viewFinder: PreviewView
+    private lateinit var imageCaptureButton: Button
+    private lateinit var videoCaptureButton: Button
     private lateinit var stampImageView: ImageView
     
     // スタンプの位置を保持する変数
@@ -102,6 +104,7 @@ class MainActivity : AppCompatActivity() {
             currentLocation = location
             Log.d(TAG, "位置情報が更新されました: ${location.latitude}, ${location.longitude}")
         }
+
         
         @Deprecated("Deprecated in Java")
         override fun onStatusChanged(provider: String, status: Int, extras: Bundle) {}
@@ -155,19 +158,15 @@ class MainActivity : AppCompatActivity() {
      * カメラを初期化し、プレビューを開始するメソッド
      */
     private fun startCamera() {
-        // カメラプロバイダのインスタンスを取得
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
-        // リスナーを追加して、カメラプロバイダが利用可能になったら実行
         cameraProviderFuture.addListener({
-            // カメラのライフサイクルをライフサイクルオーナーにバインドするために使用
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
-            // プレビューの設定
             val preview = Preview.Builder()
                 .build()
                 .also {
-                    it.setSurfaceProvider(viewBinding.viewFinder.surfaceProvider)
+                    it.setSurfaceProvider(viewFinder.surfaceProvider)
                 }
             
             // レコーダーの設定（ビデオ録画用）
@@ -206,9 +205,12 @@ class MainActivity : AppCompatActivity() {
      */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // ビューバインディングの初期化
-        viewBinding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(viewBinding.root)
+        setContentView(R.layout.activity_main)
+
+        // Viewの初期化
+        viewFinder = findViewById(R.id.viewFinder)
+        imageCaptureButton = findViewById(R.id.image_capture_button)
+        videoCaptureButton = findViewById(R.id.video_capture_button)
 
         // スタンプ画像オーバーレイを追加
         setupStampOverlay()
@@ -223,8 +225,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 写真撮影とビデオ録画ボタンのリスナーを設定
-        viewBinding.imageCaptureButton.setOnClickListener { takePhoto() }
-        viewBinding.videoCaptureButton.setOnClickListener { captureVideo() }
+        imageCaptureButton.setOnClickListener { takePhoto() }
+        videoCaptureButton.setOnClickListener { captureVideo() }
 
         // カメラ操作用のExecutorを初期化
         cameraExecutor = Executors.newSingleThreadExecutor()
@@ -293,17 +295,17 @@ class MainActivity : AppCompatActivity() {
         }
         
         // カメラプレビューの親ViewGroupを取得
-        val parent = viewBinding.viewFinder.parent as ViewGroup
-        val index = parent.indexOfChild(viewBinding.viewFinder)
+        val parent = viewFinder.parent as ViewGroup
+        val index = parent.indexOfChild(viewFinder)
         
         // カメラプレビューを一時的に削除
-        parent.removeView(viewBinding.viewFinder)
+        parent.removeView(viewFinder)
         
         // FrameLayoutを追加
         parent.addView(frameLayout, index)
         
         // カメラプレビューをFrameLayoutに追加
-        frameLayout.addView(viewBinding.viewFinder, 0)
+        frameLayout.addView(viewFinder, 0)
         
         // 初期位置を右下に設定
         stampImageView.post {
@@ -385,8 +387,8 @@ class MainActivity : AppCompatActivity() {
                         )
 
                         // プレビュー画面とのサイズ比率を計算
-                        val previewWidth = viewBinding.viewFinder.width.toFloat()
-                        val previewHeight = viewBinding.viewFinder.height.toFloat()
+                        val previewWidth = viewFinder.width.toFloat()
+                        val previewHeight = viewFinder.height.toFloat()
                         val scaleX = originalBitmap.width.toFloat() / previewWidth
                         val scaleY = originalBitmap.height.toFloat() / previewHeight
 
@@ -547,16 +549,12 @@ class MainActivity : AppCompatActivity() {
      * 録画の開始と停止を処理する
      */
     private fun captureVideo() {
-        // VideoCaptureが初期化されていない場合は早期リターン
         val videoCapture = this.videoCapture ?: return
 
-        // 録画中はボタンを無効化
-        viewBinding.videoCaptureButton.isEnabled = false
+        videoCaptureButton.isEnabled = false
 
-        // 現在の録画セッションを取得
         val curRecording = recording
         if (curRecording != null) {
-            // 録画中の場合は停止
             curRecording.stop()
             recording = null
             return
@@ -579,7 +577,6 @@ class MainActivity : AppCompatActivity() {
             .setContentValues(contentValues)
             .build()
         
-        // 録画を開始
         recording = videoCapture.output
             .prepareRecording(this, mediaStoreOutputOptions)
             .apply {
@@ -596,7 +593,7 @@ class MainActivity : AppCompatActivity() {
                 when(recordEvent) {
                     // 録画開始時
                     is VideoRecordEvent.Start -> {
-                        viewBinding.videoCaptureButton.apply {
+                        videoCaptureButton.apply {
                             text = getString(R.string.stop_capture)
                             isEnabled = true
                         }
@@ -618,7 +615,7 @@ class MainActivity : AppCompatActivity() {
                                     "${recordEvent.error}")
                         }
                         // ボタンテキストを「録画開始」に戻す
-                        viewBinding.videoCaptureButton.apply {
+                        videoCaptureButton.apply {
                             text = getString(R.string.start_capture)
                             isEnabled = true
                         }
@@ -681,7 +678,7 @@ class MainActivity : AppCompatActivity() {
      * 写真保存後に位置情報を表示する機能を追加
      */
     private fun showLocationInfo() {
-        　currentLocation?.let { location ->
+        currentLocation?.let { location ->
             val latitude = location.latitude
             val longitude = location.longitude
             
